@@ -19,6 +19,7 @@ const SMARTPROXY_PASSWORD = stripQuotes(process.env.SMARTPROXY_PASSWORD!);
 const args = process.argv.slice(2);
 const cookiesIndex = args.indexOf("--cookies");
 const COOKIES_PATH = cookiesIndex !== -1 ? args[cookiesIndex + 1] : null;
+const THIRTY_MINUTES_IN_MS = 1000 * 60 * 30;
 
 const requiredEnvVars = {
   TELEGRAM_TOKEN,
@@ -42,7 +43,11 @@ if (missingVars.length > 0) {
   );
 }
 
-const bot = new Telegraf(TELEGRAM_TOKEN!);
+const bot = new Telegraf(TELEGRAM_TOKEN!, {
+  // by default Telegraf has a 90s TTL.. sometimes videos can take much longer than that to download.. we'll use a 30min TTL (matching our yt-dlp TTL) + 1min buffer
+  handlerTimeout: THIRTY_MINUTES_IN_MS + 1000 * 60,
+});
+
 const s3Client = new S3Client({
   endpoint: S3_ENDPOINT,
   bucket: S3_BUCKET,
@@ -55,7 +60,6 @@ function isValidYouTubeUrl(url: string): boolean {
   return regex.test(url);
 }
 
-const THIRTY_MINUTES_IN_MS = 1000 * 60 * 30;
 async function downloadVideo(url: string): Promise<string> {
   return new Promise((resolve, reject) => {
     let childProcess: ChildProcess | null = null;
