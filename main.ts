@@ -1,19 +1,42 @@
 import { Telegraf } from "telegraf";
-import { spawn } from "child_process";
-import { Dropbox } from "dropbox";
-import { unlink, readdir } from "fs/promises";
-import { join } from "path";
+import { ChildProcess, spawn } from "child_process";
+import { s3, S3Client } from "bun";
+import { unlink } from "fs/promises";
 
-// Configuration
-const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN; // Telegram bot token
-const DROPBOX_TOKEN = process.env.DROPBOX_TOKEN; // Dropbox access token
-const ALLOWED_USER_ID = Number(process.env.ALLOWED_USER_ID); // Telegram user ID for authorization
-if (!TELEGRAM_TOKEN || !DROPBOX_TOKEN || !ALLOWED_USER_ID) {
-  throw Error("missing env vars in process.env");
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+const ALLOWED_USER_ID = Number(process.env.ALLOWED_USER_ID);
+const S3_ENDPOINT = process.env.S3_ENDPOINT;
+const S3_BUCKET = process.env.S3_BUCKET;
+const S3_ACCESS_KEY_ID = process.env.S3_ACCESS_KEY_ID;
+const S3_SECRET_ACCESS_KEY = process.env.S3_SECRET_ACCESS_KEY;
+
+const requiredEnvVars = {
+  TELEGRAM_TOKEN,
+  ALLOWED_USER_ID,
+  S3_ENDPOINT,
+  S3_BUCKET,
+  S3_ACCESS_KEY_ID,
+  S3_SECRET_ACCESS_KEY,
+};
+
+const missingVars = Object.entries(requiredEnvVars)
+  .filter(([_, value]) => !value)
+  .map(([name]) => name);
+
+if (missingVars.length > 0) {
+  throw new Error(
+    `Missing environment variables: ${missingVars.join(", ")} 😱\n` +
+      `Please check your .env file 🔍`
+  );
 }
 
-const bot = new Telegraf(TELEGRAM_TOKEN);
-const dbx = new Dropbox({ accessToken: DROPBOX_TOKEN });
+const bot = new Telegraf(TELEGRAM_TOKEN!);
+const s3Client = new S3Client({
+  endpoint: S3_ENDPOINT,
+  bucket: S3_BUCKET,
+  accessKeyId: S3_ACCESS_KEY_ID,
+  secretAccessKey: S3_SECRET_ACCESS_KEY,
+});
 
 function isValidYouTubeUrl(url: string): boolean {
   const regex = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+$/;
@@ -23,41 +46,44 @@ function isValidYouTubeUrl(url: string): boolean {
 const ONE_HOUR_IN_MS = 1000 * 60 * 60;
 async function downloadVideo(url: string): Promise<string> {
   return new Promise((resolve, reject) => {
+    let childProcess: ChildProcess | null = null;
     const ttl = setTimeout(() => {
+      if (childProcess) {
+        childProcess.kill();
+      }
       reject(new Error("Download timed out"));
     }, ONE_HOUR_IN_MS);
 
     let stdout = "";
-    const dl = spawn("yt-dlp", [
+    childProcess = spawn("yt-dlp", [
       url,
       "-o",
       `./downloads/%(title)s.%(ext)s`,
       "--restrict-filename",
     ]);
 
-    dl.stdout.on("data", (data) => {
+    childProcess.stdout?.on("data", (data) => {
       stdout += data.toString();
       console.log("stdout", data.toString());
     });
 
-    dl.stderr.on("data", (data) => {
+    childProcess.stderr?.on("data", (data) => {
       console.log("stderr", data.toString());
     });
 
-    dl.on("close", (code) => {
+    childProcess.on("close", (code) => {
       if (code === 0) {
         // Look for the merger line first
         let match = stdout.match(/\[Merger\] Merging formats into "(.+?)"/);
         if (!match) {
-          // Look for the "[download] Destination:" line first
-          let match = stdout.match(/\[download\] Destination: (.+)/);
+          // If not found, look for the "[download] Destination: .+" line
+          match = stdout.match(/\[download\] Destination: (.+)/);
         }
         if (!match) {
           // If not found, look for the "[download] .+ has already been downloaded" line
           match = stdout.match(/\[download\] (.+) has already been downloaded/);
         }
         if (match) {
-          console.log("regex match", match);
           resolve(match[1].trim());
           clearTimeout(ttl);
         } else {
@@ -70,26 +96,21 @@ async function downloadVideo(url: string): Promise<string> {
       }
     });
 
-    dl.on("error", (err) => {
+    childProcess.on("error", (err) => {
       reject(err);
       clearTimeout(ttl);
     });
   });
 }
 
-async function uploadToDropbox(filePath: string): Promise<void> {
-  //   console.log("mocked dropbox upload from file path:", filePath);
-  //   await new Promise<void>((res) => {
-  //     setTimeout(() => {
-  //       res();
-  //     }, 15_000);
-  //   });
-  const fileContent = await Bun.file(filePath).arrayBuffer();
-  const fileName = filePath.split("/").pop() || "video.mp4";
-  await dbx.filesUpload({
-    path: `/videos/${fileName}`,
-    contents: fileContent,
-  });
+async function uploadToSpaces(filePath: string): Promise<void> {
+  const fileName = filePath.split("/").pop(); // Extract the file name from the path
+  if (!fileName) {
+    throw new Error("Invalid file path, unable to determine file name.");
+  }
+
+  const s3file = s3Client.file(`yt-dlp/${fileName}`); // Define storage path in Spaces
+  await Bun.write(s3file, Bun.file(filePath)); // Upload file to DigitalOcean Spaces
 }
 
 bot.on("text", async (ctx) => {
@@ -112,16 +133,20 @@ bot.on("text", async (ctx) => {
   }
 
   ctx.reply("Starting download...");
+  let filePath;
   try {
-    const filePath = await downloadVideo(url);
-    ctx.reply("Download complete. Uploading to Dropbox...");
-    await uploadToDropbox(filePath);
-    ctx.reply("Upload complete!");
-    await unlink(filePath); // Delete the specific downloaded file
+    filePath = await downloadVideo(url);
+    ctx.reply("Download complete. Uploading to Spaces...");
+    await uploadToSpaces(filePath);
+    ctx.reply(`Upload complete!`);
   } catch (error) {
     ctx.reply(
       `Error: ${error instanceof Error ? error.message : "Unknown error"}`
     );
+    console.error(error);
+  } finally {
+    if (!filePath) return;
+    await unlink(filePath); // Delete the specific transient downloaded file if exists
   }
 });
 
