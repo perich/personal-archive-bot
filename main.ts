@@ -10,6 +10,10 @@ const S3_BUCKET = process.env.S3_BUCKET;
 const S3_ACCESS_KEY_ID = process.env.S3_ACCESS_KEY_ID;
 const S3_SECRET_ACCESS_KEY = process.env.S3_SECRET_ACCESS_KEY;
 
+const args = process.argv.slice(2);
+const cookiesIndex = args.indexOf("--cookies");
+const COOKIES_PATH = cookiesIndex !== -1 ? args[cookiesIndex + 1] : null;
+
 const requiredEnvVars = {
   TELEGRAM_TOKEN,
   ALLOWED_USER_ID,
@@ -43,24 +47,32 @@ function isValidYouTubeUrl(url: string): boolean {
   return regex.test(url);
 }
 
-const ONE_HOUR_IN_MS = 1000 * 60 * 60;
+const THIRTY_MINUTES_IN_MS = 1000 * 60 * 30;
 async function downloadVideo(url: string): Promise<string> {
   return new Promise((resolve, reject) => {
     let childProcess: ChildProcess | null = null;
+    let stdout = "";
+    let stderr = "";
+
     const ttl = setTimeout(() => {
       if (childProcess) {
         childProcess.kill();
       }
       reject(new Error("Download timed out"));
-    }, ONE_HOUR_IN_MS);
+    }, THIRTY_MINUTES_IN_MS);
 
-    let stdout = "";
-    childProcess = spawn("yt-dlp", [
+    const ytDlpArgs = [
       url,
       "-o",
       `./downloads/%(title)s.%(ext)s`,
       "--restrict-filename",
-    ]);
+    ];
+
+    if (COOKIES_PATH) {
+      ytDlpArgs.push("--cookies", COOKIES_PATH);
+    }
+
+    childProcess = spawn("yt-dlp", ytDlpArgs);
 
     childProcess.stdout?.on("data", (data) => {
       stdout += data.toString();
@@ -68,6 +80,7 @@ async function downloadVideo(url: string): Promise<string> {
     });
 
     childProcess.stderr?.on("data", (data) => {
+      stderr += data.toString();
       console.log("stderr", data.toString());
     });
 
@@ -91,7 +104,7 @@ async function downloadVideo(url: string): Promise<string> {
           clearTimeout(ttl);
         }
       } else {
-        reject(new Error("Download failed"));
+        reject(new Error(`Download failed. From stderr: ${stderr} `));
         clearTimeout(ttl);
       }
     });
