@@ -2,6 +2,10 @@ import { Telegraf } from "telegraf";
 import { ChildProcess, spawn } from "child_process";
 import { s3, S3Client } from "bun";
 import { unlink } from "fs/promises";
+const stripQuotes = (str?: string) => {
+  if (!str) throw new Error("No string provided");
+  return str.replace(/^["']|["']$/g, "");
+};
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const ALLOWED_USER_ID = Number(process.env.ALLOWED_USER_ID);
@@ -9,6 +13,8 @@ const S3_ENDPOINT = process.env.S3_ENDPOINT;
 const S3_BUCKET = process.env.S3_BUCKET;
 const S3_ACCESS_KEY_ID = process.env.S3_ACCESS_KEY_ID;
 const S3_SECRET_ACCESS_KEY = process.env.S3_SECRET_ACCESS_KEY;
+const SMARTPROXY_USERNAME = process.env.SMARTPROXY_USERNAME;
+const SMARTPROXY_PASSWORD = stripQuotes(process.env.SMARTPROXY_PASSWORD!);
 
 const args = process.argv.slice(2);
 const cookiesIndex = args.indexOf("--cookies");
@@ -21,6 +27,8 @@ const requiredEnvVars = {
   S3_BUCKET,
   S3_ACCESS_KEY_ID,
   S3_SECRET_ACCESS_KEY,
+  SMARTPROXY_USERNAME,
+  SMARTPROXY_PASSWORD,
 };
 
 const missingVars = Object.entries(requiredEnvVars)
@@ -61,11 +69,15 @@ async function downloadVideo(url: string): Promise<string> {
       reject(new Error("Download timed out"));
     }, THIRTY_MINUTES_IN_MS);
 
+    const proxyUrl = `http://${SMARTPROXY_USERNAME}:${SMARTPROXY_PASSWORD}@gate.smartproxy.com:7000`;
+
     const ytDlpArgs = [
       url,
       "-o",
       `./downloads/%(title)s.%(ext)s`,
       "--restrict-filename",
+      "--proxy",
+      proxyUrl,
     ];
 
     if (COOKIES_PATH) {
