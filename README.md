@@ -20,13 +20,9 @@ Two thousand years ago, a volcanic eruption buried an ancient library of papyrus
 - The server sends a message to the Telegram chat bot with a success mesage, or an error message if it failed
 - The server deletes the transient files from the server
 
-### why not just use a third party service?
-
-I don't like depending on third party services to save my data. I also like the idea of having a single private archive for all of my digital media. 
-
 ### how can I use this?
 
-1. clonecreate a Telegram bot using BotFather and get the token
+1. Sign up for a Telegram bot token from BotFather, register with DigitalOcean Spaces and SmartProxy to get necessary API credentials.
 
 2. clone this repo and create a `.env` file with the necessary environment variables
 
